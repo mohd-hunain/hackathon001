@@ -7,11 +7,11 @@ const {
 } = require('../controllers/farmController');
 const { protect, authorize } = require('../middleware/auth');
 
-// Protected farm routes
+// Protected farm routes - strictly FARMER only
 router.use(protect);
 
-router.post('/', authorize('FARMER', 'MASTER'), createFarm);
-router.get('/my', authorize('FARMER', 'MASTER'), getMyFarms);
-router.patch('/:id', authorize('FARMER', 'MASTER'), updateFarm);
+router.post('/', authorize('FARMER'), createFarm);
+router.get('/my', authorize('FARMER'), getMyFarms);
+router.patch('/:id', authorize('FARMER'), updateFarm);
 
 module.exports = router;
