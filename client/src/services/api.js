@@ -1,8 +1,12 @@
 import axios from 'axios';
 
 // Default demo JWT token for FARMER role to ensure dashboard works seamlessly
-const DEMO_FARMER_TOKEN =
+export const DEMO_FARMER_TOKEN =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY1ZTliMTExMTExMTExMTExMTExMTExMSIsInJvbGUiOiJGQVJNRVIiLCJlbWFpbCI6ImZhcm1lckBmYXJtZ3JpZC5pbyIsImlhdCI6MTczMTM1MDAwMH0.signature';
+
+// Default demo JWT token for RESOURCE_OWNER role
+export const DEMO_OWNER_TOKEN =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY1ZTliMjIyMjIyMjIyMjIyMjIyMjIyMiIsInJvbGUiOiJSRVNPVVJDRV9PV05FUiIsImVtYWlsIjoib3duZXJAZmFybWdyaWQuaW8iLCJpYXQiOjE3ODkwOTE0ODMsImV4cCI6MTc5MTY4MzQ4M30.Xq_1JuTnI54x9UZROJQBjfHIYxrq3NQ-At5yzdzjhjs';
 
 const api = axios.create({
   baseURL: '/api',
@@ -13,87 +17,38 @@ const api = axios.create({
 
 // Attach Authorization header if token exists
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('farmgrid_token') || DEMO_FARMER_TOKEN;
+  if (config.headers.Authorization) {
+    return config;
+  }
+  const storedToken = localStorage.getItem('farmgrid_token');
+  const storedRole = localStorage.getItem('farmgrid_role');
+  const isOwnerContext =
+    storedRole === 'RESOURCE_OWNER' ||
+    (config.url && (config.url.startsWith('/resources/my') || config.url.includes('/schedule/'))) ||
+    (typeof window !== 'undefined' && window.location && window.location.pathname.startsWith('/owner'));
+
+  const token = storedToken || (isOwnerContext ? (localStorage.getItem('farmgrid_owner_token') || DEMO_OWNER_TOKEN) : DEMO_FARMER_TOKEN);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// --- OFFLINE SYNC QUEUE HELPER (Rule 577-594 of FARMGRID_RULES.md) ---
-const OFFLINE_QUEUE_KEY = 'farmgrid_offline_requests';
+import {
+  getQueue,
+  enqueueRequest,
+  removeQueueItem,
+  clearQueue,
+  syncOfflineQueue,
+  checkIsOnline,
+} from './offlineQueue';
 
-export const getOfflineQueue = () => {
-  try {
-    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    console.error('Error reading offline queue', e);
-    return [];
-  }
-};
-
-export const saveToOfflineQueue = (requestData) => {
-  const queue = getOfflineQueue();
-  const offlineItem = {
-    ...requestData,
-    _id: `offline_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-    status: 'PENDING',
-    syncStatus: 'PENDING_OFFLINE',
-    createdAt: new Date().toISOString(),
-    isLocalOffline: true,
-  };
-  queue.push(offlineItem);
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
-  return offlineItem;
-};
-
-export const clearOfflineQueue = () => {
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify([]));
-};
-
-export const removeOfflineItem = (id) => {
-  const queue = getOfflineQueue().filter((item) => item._id !== id);
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
-};
-
-// Synchronize all pending offline requests to the backend
-export const syncOfflineRequests = async () => {
-  const queue = getOfflineQueue();
-  if (queue.length === 0) return { syncedCount: 0, failedCount: 0 };
-
-  let syncedCount = 0;
-  let failedCount = 0;
-  const remainingQueue = [];
-
-  for (const item of queue) {
-    try {
-      const payload = {
-        farmId: item.farmId,
-        resourceId: item.resourceId || undefined,
-        resourceType: item.resourceType,
-        earliestStart: item.earliestStart,
-        latestEnd: item.latestEnd,
-        requiredDurationMinutes: Number(item.requiredDurationMinutes),
-        cropStage: item.cropStage,
-        urgencyJustification: item.urgencyJustification,
-        weatherRiskScore: item.weatherRiskScore,
-        resourceConstraintScore: item.resourceConstraintScore,
-        syncStatus: 'SYNCED',
-      };
-
-      await api.post('/requests', payload);
-      syncedCount++;
-    } catch (err) {
-      console.error('Sync failed for item:', item, err);
-      failedCount++;
-      remainingQueue.push(item);
-    }
-  }
-
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remainingQueue));
-  return { syncedCount, failedCount };
-};
+// Re-export modular offline queue helpers for backwards compatibility
+export const getOfflineQueue = getQueue;
+export const saveToOfflineQueue = enqueueRequest;
+export const removeOfflineItem = removeQueueItem;
+export const clearOfflineQueue = clearQueue;
+export const syncOfflineRequests = syncOfflineQueue;
 
 // --- API SERVICES ---
 
@@ -108,9 +63,56 @@ export const createFarm = async (farmData) => {
   return res.data;
 };
 
+export const updateFarm = async (farmId, farmData) => {
+  const res = await api.patch(`/farms/${farmId}`, farmData);
+  return res.data;
+};
+
 // Resources
 export const getResources = async (params = {}) => {
   const res = await api.get('/resources', { params });
+  return res.data;
+};
+
+export const getMyResources = async () => {
+  const res = await api.get('/resources/my', {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('farmgrid_owner_token') || DEMO_OWNER_TOKEN}`,
+    },
+  });
+  return res.data;
+};
+
+export const createResource = async (resourceData) => {
+  const res = await api.post('/resources', resourceData, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('farmgrid_owner_token') || DEMO_OWNER_TOKEN}`,
+    },
+  });
+  return res.data;
+};
+
+export const updateResource = async (id, resourceData) => {
+  const res = await api.patch(`/resources/${id}`, resourceData, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('farmgrid_owner_token') || DEMO_OWNER_TOKEN}`,
+    },
+  });
+  return res.data;
+};
+
+export const deleteResource = async (id) => {
+  const res = await api.delete(`/resources/${id}`, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('farmgrid_owner_token') || DEMO_OWNER_TOKEN}`,
+    },
+  });
+  return res.data;
+};
+
+// Schedules
+export const getResourceSchedule = async (resourceId) => {
+  const res = await api.get(`/schedule/resource/${resourceId}`);
   return res.data;
 };
 
@@ -120,15 +122,27 @@ export const getMyRequests = async () => {
   return res.data;
 };
 
+export const getRequestById = async (id) => {
+  const res = await api.get(`/requests/${id}`);
+  return res.data;
+};
+
+export const cancelRequest = async (id) => {
+  const res = await api.patch(`/requests/${id}/cancel`);
+  return res.data;
+};
+
 export const createRequest = async (requestData, isSimulatedOffline = false) => {
   // If offline or simulated offline, store locally in localStorage queue
-  if (!navigator.onLine || isSimulatedOffline) {
-    const offlineItem = saveToOfflineQueue(requestData);
+  if (!checkIsOnline() || isSimulatedOffline) {
+    const offlineItem = enqueueRequest(requestData);
+    const count = getQueue().length;
     return {
       success: true,
       data: offlineItem,
-      message: 'Request saved offline. Will automatically sync when online.',
+      message: `Request saved offline! Assigned status PENDING_OFFLINE. (${count} request${count > 1 ? 's' : ''} currently queued in offline storage).`,
       offline: true,
+      pendingCount: count,
     };
   }
 
@@ -137,13 +151,15 @@ export const createRequest = async (requestData, isSimulatedOffline = false) => 
     return res.data;
   } catch (err) {
     // If network failure occurs, fall back to offline queue
-    if (!err.response) {
-      const offlineItem = saveToOfflineQueue(requestData);
+    if (!err.response || err.message === 'Network Error') {
+      const offlineItem = enqueueRequest(requestData);
+      const count = getQueue().length;
       return {
         success: true,
         data: offlineItem,
-        message: 'Network offline. Request saved locally for automatic sync.',
+        message: `Network offline. Request saved locally with status PENDING_OFFLINE. (${count} pending in local queue).`,
         offline: true,
+        pendingCount: count,
       };
     }
     throw err;

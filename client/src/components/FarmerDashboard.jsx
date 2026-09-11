@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import EditFarmModal from './EditFarmModal';
+import PriorityBreakdown from './PriorityBreakdown';
 import {
   getMyFarms,
   createFarm,
   getResources,
   getMyRequests,
   createRequest,
+  cancelRequest,
   getOfflineQueue,
   syncOfflineRequests,
 } from '../services/api';
@@ -23,6 +27,8 @@ export default function FarmerDashboard() {
 
   // Modals
   const [showAddFarmModal, setShowAddFarmModal] = useState(false);
+  const [showEditFarmModal, setShowEditFarmModal] = useState(false);
+  const [selectedFarmToEdit, setSelectedFarmToEdit] = useState(null);
   const [showCreateRequestModal, setShowCreateRequestModal] = useState(false);
   const [showResourcesModal, setShowResourcesModal] = useState(false);
   const [selectedResourceForRequest, setSelectedResourceForRequest] = useState(null);
@@ -542,20 +548,34 @@ export default function FarmerDashboard() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setRequestForm((prev) => ({
-                        ...prev,
-                        farmId: farm._id,
-                        cropStage: farm.cropStage,
-                      }));
-                      setShowCreateRequestModal(true);
-                    }}
-                    className="btn btn-secondary btn-sm"
-                    style={{ alignSelf: 'flex-start' }}
-                  >
-                    Request Resource for Farm
-                  </button>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedFarmToEdit(farm);
+                        setShowEditFarmModal(true);
+                      }}
+                      className="btn btn-secondary btn-sm"
+                      id={`btn-edit-farm-${farm._id}`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                    >
+                      ✏️ Edit Farm
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRequestForm((prev) => ({
+                          ...prev,
+                          farmId: farm._id,
+                          cropStage: farm.cropStage,
+                        }));
+                        setShowCreateRequestModal(true);
+                      }}
+                      className="btn btn-primary btn-sm"
+                      style={{ alignSelf: 'flex-start' }}
+                    >
+                      Request Resource
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -623,21 +643,64 @@ export default function FarmerDashboard() {
                     </div>
                   </div>
 
-                  {req.priorityScore !== undefined && (
-                    <div className="priority-pill">
-                      <span>Priority Score:</span>
-                      <span className="priority-number">{req.priorityScore}/100</span>
-                      {req.priorityBreakdown && (
-                        <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                          (U:{req.priorityBreakdown.urgencyDeadline} W:{req.priorityBreakdown.weatherRisk} C:{req.priorityBreakdown.cropReadiness})
+                  {/* Allocated Time Slot */}
+                  {req.allocatedStart && req.allocatedEnd && (
+                    <div className="allocated-box" style={{ padding: '6px 10px', margin: '8px 0' }}>
+                      <span style={{ fontSize: '16px' }}>✅</span>
+                      <div style={{ fontSize: '0.78rem' }}>
+                        <span style={{ fontWeight: 700, color: '#065f46' }}>ALLOCATED: </span>
+                        <span style={{ color: '#047857', fontWeight: 600 }}>
+                          {new Date(req.allocatedStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {' → '}
+                          {new Date(req.allocatedEnd).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
-                      )}
+                      </div>
                     </div>
                   )}
+
+                  {/* Priority Breakdown (Reusable Component) */}
+                  <div style={{ marginTop: '8px', marginBottom: '8px' }}>
+                    <PriorityBreakdown
+                      priorityScore={req.priorityScore}
+                      priorityBreakdown={req.priorityBreakdown}
+                      compact={true}
+                    />
+                  </div>
 
                   {req.explanation && (
                     <div className="explanation-text">{req.explanation}</div>
                   )}
+
+                  {/* Actions */}
+                  <div className="card-actions" style={{ marginTop: '8px' }}>
+                    <Link
+                      to={`/requests/${req._id}`}
+                      className="btn btn-secondary btn-sm"
+                    >
+                      🔍 Details
+                    </Link>
+
+                    {req.status !== 'CANCELLED' && req.status !== 'COMPLETED' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (window.confirm('Cancel this booking request?')) {
+                            try {
+                              await cancelRequest(req._id);
+                              showToast('Request cancelled.');
+                              await loadData();
+                            } catch (err) {
+                              showToast(err.response?.data?.message || 'Error cancelling', 'error');
+                            }
+                          }
+                        }}
+                        className="btn btn-secondary btn-sm"
+                        style={{ color: '#b91c1c', borderColor: '#fecaca', marginLeft: 'auto' }}
+                      >
+                        ✕ Cancel
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -652,7 +715,16 @@ export default function FarmerDashboard() {
         <div className="modal-backdrop">
           <div className="modal-content" style={{ maxWidth: '850px' }}>
             <div className="modal-header">
-              <h3 className="modal-title">Agricultural Resources Catalog</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <h3 className="modal-title">Agricultural Resources Catalog</h3>
+                <Link
+                  to="/resources"
+                  onClick={() => setShowResourcesModal(false)}
+                  style={{ fontSize: '0.82rem', color: 'var(--primary)', fontWeight: 600, textDecoration: 'none' }}
+                >
+                  Open Full Catalog Page ↗
+                </Link>
+              </div>
               <button onClick={() => setShowResourcesModal(false)} style={{ fontSize: '20px' }}>
                 ✕
               </button>
@@ -1007,6 +1079,24 @@ export default function FarmerDashboard() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* 4. Edit Farm Modal */}
+      {selectedFarmToEdit && (
+        <EditFarmModal
+          farm={selectedFarmToEdit}
+          isOpen={showEditFarmModal}
+          onClose={() => {
+            setShowEditFarmModal(false);
+            setSelectedFarmToEdit(null);
+          }}
+          onFarmUpdated={(updatedFarm) => {
+            setFarms((prev) =>
+              prev.map((f) => (f._id === updatedFarm._id ? updatedFarm : f))
+            );
+            showToast(`Farm "${updatedFarm.name}" updated successfully!`);
+          }}
+        />
       )}
     </div>
   );
