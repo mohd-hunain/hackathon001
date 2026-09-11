@@ -1,25 +1,59 @@
 const { Resource } = require('../models');
 
-// @desc    Get all resources with optional filters
+// @desc    Get all resources for browsing (Farmer-facing & general)
 // @route   GET /api/resources
-// @access  Public / Protected
+// @access  Protected
+// Note: Availability is NOT calculated permanently. A resource with existing bookings
+// must still appear because availability depends on requested time windows.
 const getAllResources = async (req, res) => {
   try {
     const { category, type, maintenanceStatus } = req.query;
     const filter = {};
 
-    if (category) filter.category = category;
-    if (type) filter.type = type;
-    if (maintenanceStatus) filter.maintenanceStatus = maintenanceStatus;
+    if (category) {
+      filter.category = category.trim().toUpperCase();
+    }
+    if (type) {
+      filter.type = { $regex: new RegExp(`^${type.trim()}$`, 'i') };
+    }
+    if (maintenanceStatus) {
+      filter.maintenanceStatus = maintenanceStatus.trim().toUpperCase();
+    }
 
     const resources = await Resource.find(filter)
       .populate('ownerId', 'name phone email')
       .sort({ createdAt: -1 });
 
+    // Explicitly format and map fields needed by Farmers
+    const formattedResources = resources.map((resource) => {
+      const doc = resource.toObject ? resource.toObject() : resource;
+      return {
+        _id: doc._id,
+        name: doc.name,
+        category: doc.category,
+        type: doc.type,
+        specifications: doc.specifications || '',
+        location: {
+          latitude: doc.location ? doc.location.latitude : undefined,
+          longitude: doc.location ? doc.location.longitude : undefined,
+          village: (doc.location && doc.location.village) || '',
+        },
+        operatingWindow: {
+          startTime: (doc.operatingWindow && doc.operatingWindow.startTime) || '06:00',
+          endTime: (doc.operatingWindow && doc.operatingWindow.endTime) || '18:00',
+        },
+        maintenanceStatus: doc.maintenanceStatus || 'OPERATIONAL',
+        bufferMinutes: doc.bufferMinutes !== undefined ? doc.bufferMinutes : 30,
+        ownerId: doc.ownerId,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      count: resources.length,
-      data: resources,
+      count: formattedResources.length,
+      data: formattedResources,
     });
   } catch (error) {
     return res.status(500).json({

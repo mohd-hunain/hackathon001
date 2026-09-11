@@ -1,8 +1,11 @@
+const mongoose = require('mongoose');
 const { BookingRequest, Farm, Resource } = require('../models');
+
+const VALID_CROP_STAGES = ['SOWING', 'GROWING', 'HARVEST_READY', 'CRITICAL'];
 
 // @desc    Submit a new resource booking request
 // @route   POST /api/requests
-// @access  Protected (FARMER, MASTER)
+// @access  Protected (FARMER)
 const createRequest = async (req, res) => {
   try {
     const {
@@ -14,12 +17,21 @@ const createRequest = async (req, res) => {
       requiredDurationMinutes,
       cropStage,
       urgencyJustification,
+      weatherRiskScore,
+      resourceConstraintScore,
       syncStatus,
     } = req.body;
 
-    const farmerId = req.user._id || req.user.id;
+    const currentFarmerId = (req.user._id || req.user.id).toString();
 
-    // Verify farm exists and belongs to farmer
+    // 1. Verify farm exists and belongs to the logged-in Farmer
+    if (!farmId || !mongoose.Types.ObjectId.isValid(farmId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid Farm ID is required',
+      });
+    }
+
     const farm = await Farm.findById(farmId);
     if (!farm) {
       return res.status(404).json({
@@ -28,44 +40,171 @@ const createRequest = async (req, res) => {
       });
     }
 
-    // Default benchmark scoring skeleton (will be refined by the full priorityScorer engine)
-    const urgencyDeadlineScore = 15;
-    const weatherRiskScore = 10;
-    const cropReadinessScore = cropStage === 'CRITICAL' ? 20 : cropStage === 'HARVEST_READY' ? 18 : 10;
-    const queueWaitingScore = 5;
-    const distanceLogisticsScore = 8;
-    const resourceConstraintsScore = 4;
-    const priorityScore =
-      urgencyDeadlineScore +
-      weatherRiskScore +
-      cropReadinessScore +
-      queueWaitingScore +
-      distanceLogisticsScore +
-      resourceConstraintsScore;
+    if (farm.farmerId.toString() !== currentFarmerId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized. Farm does not belong to the logged-in Farmer',
+      });
+    }
+
+    // 2. Validate resourceType
+    if (!resourceType || typeof resourceType !== 'string' || !resourceType.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Resource type is required',
+      });
+    }
+
+    // 3. Validate optional resourceId format
+    if (resourceId && !mongoose.Types.ObjectId.isValid(resourceId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid resource ID format',
+      });
+    }
+
+    // 4. Validate requested time window
+    if (!earliestStart || !latestEnd) {
+      return res.status(400).json({
+        success: false,
+        message: 'Both earliestStart and latestEnd are required',
+      });
+    }
+
+    const start = new Date(earliestStart);
+    const end = new Date(latestEnd);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid date format for earliestStart or latestEnd',
+      });
+    }
+
+    // earliestStart must be before latestEnd
+    if (start >= end) {
+      return res.status(400).json({
+        success: false,
+        message: 'earliestStart must be before latestEnd',
+      });
+    }
+
+    // 5. Validate requiredDurationMinutes and verify that it fits inside the window
+    if (
+      requiredDurationMinutes === undefined ||
+      requiredDurationMinutes === null ||
+      requiredDurationMinutes === ''
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'requiredDurationMinutes is required',
+      });
+    }
+
+    const duration = Number(requiredDurationMinutes);
+    if (isNaN(duration) || !isFinite(duration) || duration <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Required duration must be a positive number of minutes',
+      });
+    }
+
+    const windowMinutes = Math.floor((end.getTime() - start.getTime()) / (1000 * 60));
+    if (duration > windowMinutes) {
+      return res.status(400).json({
+        success: false,
+        message: `Required duration (${duration} mins) exceeds the requested time window (${windowMinutes} mins)`,
+      });
+    }
+
+    // 6. Validate cropStage
+    const resolvedCropStage = cropStage || farm.cropStage || 'GROWING';
+    if (!VALID_CROP_STAGES.includes(resolvedCropStage)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid crop stage: '${resolvedCropStage}'. Valid stages are: ${VALID_CROP_STAGES.join(', ')}`,
+      });
+    }
+
+    // 7. Prepare the request for the shared priority engine
+    // Frontend priorityScore is strictly ignored and calculated only on the backend
+    let cropReadinessScore = 10;
+    if (resolvedCropStage === 'CRITICAL') {
+      cropReadinessScore = 20;
+    } else if (resolvedCropStage === 'HARVEST_READY') {
+      cropReadinessScore = 18;
+    } else if (resolvedCropStage === 'GROWING') {
+      cropReadinessScore = 12;
+    } else if (resolvedCropStage === 'SOWING') {
+      cropReadinessScore = 10;
+    }
+
+    let weatherScore = 10;
+    if (weatherRiskScore !== undefined && weatherRiskScore !== null && weatherRiskScore !== '') {
+      const parsedWeather = Number(weatherRiskScore);
+      if (!isNaN(parsedWeather) && isFinite(parsedWeather)) {
+        weatherScore = Math.min(25, Math.max(0, parsedWeather));
+      }
+    }
+
+    let urgencyScore = 15;
+    if (windowMinutes <= duration * 1.25) {
+      urgencyScore = 24;
+    } else if (windowMinutes <= duration * 1.75) {
+      urgencyScore = 20;
+    } else if (windowMinutes <= duration * 2.5) {
+      urgencyScore = 16;
+    } else {
+      urgencyScore = 12;
+    }
+
+    const queueScore = 5;
+    const distanceScore = 8;
+
+    let constraintScore = 4;
+    if (
+      resourceConstraintScore !== undefined &&
+      resourceConstraintScore !== null &&
+      resourceConstraintScore !== ''
+    ) {
+      const parsedConstraint = Number(resourceConstraintScore);
+      if (!isNaN(parsedConstraint) && isFinite(parsedConstraint)) {
+        constraintScore = Math.min(5, Math.max(0, parsedConstraint));
+      }
+    }
+
+    const priorityScore = Math.min(
+      100,
+      urgencyScore + weatherScore + cropReadinessScore + queueScore + distanceScore + constraintScore
+    );
 
     const priorityBreakdown = {
-      urgencyDeadline: urgencyDeadlineScore,
-      weatherRisk: weatherRiskScore,
+      urgencyDeadline: urgencyScore,
+      weatherRisk: weatherScore,
       cropReadiness: cropReadinessScore,
-      queueWaiting: queueWaitingScore,
-      distanceLogistics: distanceLogisticsScore,
-      resourceConstraints: resourceConstraintsScore,
+      queueWaiting: queueScore,
+      distanceLogistics: distanceScore,
+      resourceConstraints: constraintScore,
     };
 
-    const explanation = `Request submitted for ${resourceType}. Initial priority score: ${priorityScore}/100 based on crop stage ${cropStage} and scheduling deadlines.`;
+    const explanation = `Request prepared for priority scheduler. Initial score: ${priorityScore}/100 (Urgency: ${urgencyScore}/25, Weather Risk: ${weatherScore}/25, Crop Readiness: ${cropReadinessScore}/20, Queue: ${queueScore}/15, Distance: ${distanceScore}/10, Constraints: ${constraintScore}/5).`;
 
+    // 8. Save the request with status 'PENDING'
     const request = await BookingRequest.create({
-      farmerId,
-      farmId,
+      farmerId: currentFarmerId,
+      farmId: farm._id,
       resourceId: resourceId || null,
-      resourceType,
-      earliestStart,
-      latestEnd,
-      requiredDurationMinutes,
-      cropStage: cropStage || farm.cropStage,
-      urgencyJustification: urgencyJustification || '',
-      weatherRiskScore,
-      resourceConstraintScore: resourceConstraintsScore,
+      resourceType: resourceType.trim(),
+      earliestStart: start,
+      latestEnd: end,
+      requiredDurationMinutes: duration,
+      cropStage: resolvedCropStage,
+      urgencyJustification:
+        urgencyJustification && typeof urgencyJustification === 'string'
+          ? urgencyJustification.trim()
+          : '',
+      weatherRiskScore: weatherScore,
+      resourceConstraintScore: constraintScore,
       priorityScore,
       priorityBreakdown,
       status: 'PENDING',
