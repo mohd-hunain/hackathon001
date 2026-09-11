@@ -11,7 +11,7 @@ const { protect, authorize } = require('../middleware/auth');
 // Protected routes
 router.use(protect);
 
-router.post('/', authorize('FARMER', 'MASTER'), createRequest);
+router.post('/', authorize('FARMER'), createRequest);
 router.get('/my', authorize('FARMER', 'MASTER'), getMyRequests);
 router.get('/:id', getRequestById);
 router.patch('/:id/cancel', authorize('FARMER', 'MASTER'), cancelRequest);

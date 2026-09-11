@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test:auth": "node test/auth.test.js"
+    "test": "node test/farm.test.js",
+    "test:auth": "node test/auth.test.js",
+    "test:farm": "node test/farm.test.js",
+    "test:resource": "node test/resource.test.js",
+    "test:request": "node test/request.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
